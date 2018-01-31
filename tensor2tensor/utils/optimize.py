@@ -77,6 +77,7 @@ class ConditionalOptimizer(tf.train.Optimizer):
       optimizer_name = "TrueAdam"
 
     tf.logging.info("Using optimizer %s", optimizer_name)
+    self.fp16_loss_scale=hparams.fp16_loss_scale or 1
 
     if optimizer_name == "Adam":
       # We change the default epsilon for Adam and re-scale lr.
@@ -106,7 +107,11 @@ class ConditionalOptimizer(tf.train.Optimizer):
       self._opt = tf.contrib.layers.OPTIMIZER_CLS_NAMES[optimizer_name](lr)
 
   def compute_gradients(self, loss, var_list=None, **kwargs):
-    return self._opt.compute_gradients(loss, var_list, **kwargs)
+    gradients = self._opt.compute_gradients(loss*self.fp16_loss_scale, var_list, **kwargs)
+    if self.fp16_loss_scale != 1:
+      #rescale gradients with loss scale
+      return gradients/self.fp16_loss_scale
+    return gradients
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
     return self._opt.apply_gradients(

@@ -900,6 +900,13 @@ def transformer_big():
   hparams.layer_prepostprocess_dropout = 0.3
   return hparams
 
+@registry.register_hparams
+def transformer_big_fp16_HMMA():
+  """HParams for transfomer big model with fp16 mixed pecision on WMT."""
+  hparams = transformer_big()
+  hparams.add_hparam("dtype","tf.float16")
+  hparams.add_hparam("fp16_loss_scale",8)
+  return hparams
 
 @registry.register_hparams
 def transformer_big_single_gpu():

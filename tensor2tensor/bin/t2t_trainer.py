@@ -228,6 +228,12 @@ def execute_schedule(exp):
   with profile_context():
     getattr(exp, FLAGS.schedule)()
 
+def float32_variable_storage_getter(getter, name, shape=None, dtype=None, initializer=None,   regularizer=None, trainable=True, *args, **kwargs):
+  storage_dtype = tf.float32 if trainable else dtype
+  variable = getter(name, shape, dtype=storage_dtype, initializer=initializer, regularizer=regularizer, trainable=trainable, *args, **kwargs)
+  if trainable and dtype != tf.float32:
+    variable = tf.cast(variable, dtype)
+  return variable
 
 @contextlib.contextmanager
 def maybe_cloud_tpu():
@@ -266,8 +272,10 @@ def main(_):
     save_metadata(hparams)
 
   with maybe_cloud_tpu():
-    exp_fn = create_experiment_fn()
-    exp = exp_fn(create_run_config(hparams), hparams)
+    with tf.variable_scope('fp32_storage', custom_getter=float32_variable_storage_getter):
+
+      exp_fn = create_experiment_fn()
+      exp = exp_fn(create_run_config(hparams), hparams)
     execute_schedule(exp)
 
 
