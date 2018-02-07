@@ -170,6 +170,7 @@ class T2TModel(base.Layer):
     else:
       sharded_logits, sharded_losses = dp(self.model_fn, datashard_to_features)
       losses = average_sharded_losses(sharded_losses)
+    #print("@@@@@DEBUG: \nlosses: ",losses,"\nsharded losses: ",sharded_losses)
 
     # TODO(rsepassi): Reenable scheduled sampling
     # Disabled because of model_fn_sharded refactor
@@ -192,6 +193,8 @@ class T2TModel(base.Layer):
       tf.logging.info("Building model body")
       body_out = self.body(transformed_features)
     output, losses = self._normalize_body_output(body_out)
+    #print("@@@@@DEBUG: bodyout:",body_out)
+    #print("@@@@@DEBUG: losses:",losses)
 
     if "training" in losses:
       tf.logging.info("Skipping T2TModel top and loss because training loss "
@@ -849,14 +852,15 @@ class T2TModel(base.Layer):
 
     assert "training" in losses_dict
 
+    loss = 0
     # Summarize losses
     with tf.name_scope("losses"):
       for loss_name, loss_val in losses_dict.items():
         tf.summary.scalar(loss_name, loss_val)
-
+        loss+= tf.cast(loss_val,tf.float32)
     # Accumulate losses
-    loss = sum(losses_dict.values())
-
+    # loss = sum(losses_dict.values())
+    loss = tf.cast(loss,tf.float16)
     # EVAL mode
     if mode == tf.estimator.ModeKeys.EVAL:
       return model.estimator_spec_eval(features, logits, labels, loss)
@@ -899,6 +903,7 @@ class T2TModel(base.Layer):
       eval_metrics_fns = metrics.create_evaluation_metrics([problem], hparams)
       eval_metrics = {}
       for metric_name, metric_fn in six.iteritems(eval_metrics_fns):
+        #print("xxxxDEBUG eval logits: ",logits,"\nxxxxDEBUG eval feat",features)
         eval_metrics[metric_name] = metric_fn(logits, features)
 
       return tf.estimator.EstimatorSpec(
@@ -1136,11 +1141,12 @@ def average_sharded_losses(sharded_losses):
     if isinstance(all_shards[0], tuple):
       sharded_num, sharded_den = zip(*all_shards)
       mean_loss = (
-          tf.add_n(sharded_num) / tf.maximum(1.0, tf.add_n(sharded_den)))
+          tf.add_n(sharded_num) / tf.maximum(tf.cast(1.0,tf.float16), tf.add_n(sharded_den)))
     else:
       mean_loss = tf.reduce_mean(all_shards)
 
     losses[loss_name] = mean_loss
+    print("^^^DEBUG mean sharded loss",mean_loss)
   return losses
 
 

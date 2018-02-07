@@ -294,8 +294,10 @@ def create_evaluation_metrics(problems, model_hparams):
         kwargs["features"] = features
 
       def wrapped_metric_fn():
-        return metric_fn(predictions, labels, weights_fn=weights_fn, **kwargs)
-
+        s,w = metric_fn(predictions, labels, weights_fn=weights_fn, **kwargs)
+        #print("&&&&DEBUG metric_fn score: ",s,"\n&&&&DEBUG metric_fn weights: ",w)
+        return (tf.cast(s,tf.float32),tf.cast(w,tf.float32))
+      
       (scores, weights) = tf.cond(
           tf.equal(problem_idx, problem_choice), wrapped_metric_fn,
           lambda: (tf.constant(0.0), tf.constant(0.0)))

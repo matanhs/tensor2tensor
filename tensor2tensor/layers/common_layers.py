@@ -219,8 +219,10 @@ def embedding(x, vocab_size, dense_size, name=None, reuse=None, multiplier=1.0,
               symbol_dropout_rate=0.0):
   """Embed x of type int64 into dense vectors, reducing to max 4 dimensions."""
   with tf.variable_scope(
-      name, default_name="embedding", values=[x], reuse=reuse):
-    embedding_var = tf.get_variable("kernel", [vocab_size, dense_size])
+         name, default_name="embedding", values=[x], reuse=reuse,
+         custom_getter=float32_variable_storage_getter):
+    embedding_var = tf.cast(tf.get_variable("kernel", [vocab_size, dense_size],
+      dtype=tf.float32),tf.float16)
     # On the backwards pass, we want to convert the gradient from
     # an indexed-slices to a regular tensor before sending it back to the
     # parameter server. This avoids excess computation on the parameter server.
@@ -232,9 +234,11 @@ def embedding(x, vocab_size, dense_size, name=None, reuse=None, multiplier=1.0,
       emb_x *= multiplier
     static_shape = emb_x.shape.as_list()
     if len(static_shape) < 5:
+      #print ("****DEBUG embeddings received: ",emb_x)
       return emb_x
     assert len(static_shape) == 5
-    # If we had an extra channel dimension, assume it's 1, i.e. shape[3] == 1.
+    # If we had an extra channel dimension, assume it's 1, i.e. shape[3] == 1.    
+    #print ("****DEBUG embeddings received: ",emb_x)
     return tf.squeeze(emb_x, 3)
 
 
@@ -500,19 +504,25 @@ def tpu_conv1d(inputs, filters, kernel_size, padding="SAME", name="tpu_conv1d"):
 
 def layer_norm_vars(filters):
   """Create Variables for layer norm."""
-  scale = tf.get_variable(
-      "layer_norm_scale", [filters], initializer=tf.ones_initializer())
-  bias = tf.get_variable(
-      "layer_norm_bias", [filters], initializer=tf.zeros_initializer())
+  scale = tf.cast(tf.get_variable(
+      "layer_norm_scale", [filters], initializer=tf.ones_initializer(),
+      dtype=tf.float32),tf.float16)
+  bias = tf.cast(tf.get_variable(
+      "layer_norm_bias", [filters], initializer=tf.zeros_initializer(),
+      dtype=tf.float32),tf.float16)
   return scale, bias
 
 
 def layer_norm_compute_python(x, epsilon, scale, bias):
   """Layer norm raw computation."""
+  # x= tf.cast(x,tf.float32)
+
   mean = tf.reduce_mean(x, axis=[-1], keepdims=True)
   variance = tf.reduce_mean(tf.square(x - mean), axis=[-1], keepdims=True)
   norm_x = (x - mean) * tf.rsqrt(variance + epsilon)
+  #print("###DEBUG x:",x,"\n###DEBUG mean x:",mean,"\n###DEBUG var x:",variance,"\n###DEBUG norm:",norm_x,"\n###DEBUG scale: ",scale,"\n###DEBUG bias: ",bias)
   return norm_x * scale + bias
+  #return tf.cast(norm_x * scale + bias,tf.float16)
 
 
 @function.Defun(compiled=True)
@@ -535,11 +545,9 @@ def layer_norm(x, filters=None, epsilon=1e-6, name=None, reuse=None):
   if filters is None:
     filters = x.get_shape()[-1]
   with tf.variable_scope(
-      name, default_name="layer_norm", values=[x], reuse=reuse):
-    scale = tf.get_variable(
-        "layer_norm_scale", [filters], initializer=tf.ones_initializer())
-    bias = tf.get_variable(
-        "layer_norm_bias", [filters], initializer=tf.zeros_initializer())
+         name, default_name="layer_norm", values=[x], reuse=reuse,
+         custom_getter=float32_variable_storage_getter):
+    scale ,bias = layer_norm_vars(filters)
     if allow_defun:
       result = layer_norm_compute(x, tf.constant(epsilon), scale, bias)
       result.set_shape(x.get_shape())
@@ -1342,7 +1350,8 @@ def conv_relu_conv(inputs,
                    dropout=0.0,
                    name=None):
   """Hidden layer with RELU activation followed by linear projection."""
-  with tf.variable_scope(name, "conv_relu_conv", [inputs]):
+  with tf.variable_scope(name, "conv_relu_conv", [inputs],
+         custom_getter=float32_variable_storage_getter):
     inputs = maybe_zero_out_padding(
         inputs, first_kernel_size, nonpadding_mask)
     h = tpu_conv1d(inputs, filter_size, first_kernel_size, padding=padding,
@@ -1653,7 +1662,8 @@ def padded_cross_entropy(logits,
     else:
       logits, labels = pad_with_zeros(logits, labels)
     xent = smoothing_cross_entropy(logits, labels, vocab_size, confidence)
-    weights = weights_fn(labels)
+    weights = tf.cast(weights_fn(labels),tf.float16)
+    #print("$$$$$$DEBUG padded crosse weights: ",weights,"\n$$$$$$DEBUG xent: ",xent)
     if not reduce_sum:
       return xent * weights, weights
     return tf.reduce_sum(xent * weights), tf.reduce_sum(weights)
@@ -1705,7 +1715,8 @@ def smoothing_cross_entropy(logits,
           off_value=low_confidence)
     xentropy = tf.nn.softmax_cross_entropy_with_logits_v2(
         logits=logits, labels=soft_targets)
-    return xentropy - normalizing
+    #print("####DEBUG: body output:",logits,"\n####DEBUG: xentropy:",xentropy,"\n####DEBUG normal:",normalizing)
+    return xentropy - tf.cast(normalizing,tf.float16)
 
 
 def global_pool_1d(inputs, pooling_type="MAX", mask=None):
@@ -2628,3 +2639,10 @@ def dense(x, units, **kwargs):
     return _recompute_grad(fn, [x])
   else:
     return fn(x)
+
+def float32_variable_storage_getter(getter, name, shape=None, dtype=None, initializer=None,   regularizer=None, trainable=True, *args, **kwargs):
+  storage_dtype = tf.float32 if trainable else dtype
+  variable = getter(name, shape, dtype=storage_dtype, initializer=initializer, regularizer=regularizer, trainable=trainable, *args, **kwargs)
+  if trainable and dtype != tf.float32:
+    variable = tf.cast(variable, dtype)
+  return variable

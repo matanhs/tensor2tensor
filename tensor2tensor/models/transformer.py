@@ -521,6 +521,7 @@ def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
   # Append target_space_id embedding to inputs.
   emb_target_space = common_layers.embedding(
       target_space, 32, ishape_static[-1], name="target_space_embedding")
+  #print("^^^^DEBUG emb_target",emb_target_space)
   emb_target_space = tf.reshape(emb_target_space, [1, 1, -1])
   encoder_input += emb_target_space
   if hparams.pos == "timing":
@@ -609,7 +610,11 @@ def transformer_encoder(encoder_input,
   attention_dropout_broadcast_dims = (
       common_layers.comma_separated_string_to_integer_list(
           getattr(hparams, "attention_dropout_broadcast_dims", "")))
-  with tf.variable_scope(name):
+  #print("@@@DEBUG x before cast for encoder input is: ",x)
+  #x = tf.cast(encoder_input,tf.float16)
+  #print("@@@DEBUG x for encoder input is: ",x)
+  encoder_self_attention_bias = tf.cast(encoder_self_attention_bias, tf.float16)
+  with tf.variable_scope(name, custom_getter=float32_variable_storage_getter):
     if nonpadding is not None:
       padding = 1.0 - nonpadding
     else:
@@ -621,8 +626,10 @@ def transformer_encoder(encoder_input,
       pad_remover = expert_utils.PadRemover(padding)
     for layer in xrange(hparams.num_encoder_layers or
                         hparams.num_hidden_layers):
-      with tf.variable_scope("layer_%d" % layer):
-        with tf.variable_scope("self_attention"):
+      with tf.variable_scope("layer_%d" % layer,
+             custom_getter=float32_variable_storage_getter):
+        with tf.variable_scope("self_attention",
+               custom_getter=float32_variable_storage_getter):
           y = common_attention.multihead_attention(
               common_layers.layer_preprocess(x, hparams),
               None,
@@ -638,7 +645,8 @@ def transformer_encoder(encoder_input,
               make_image_summary=make_image_summary,
               dropout_broadcast_dims=attention_dropout_broadcast_dims)
           x = common_layers.layer_postprocess(x, y, hparams)
-        with tf.variable_scope("ffn"):
+        with tf.variable_scope("ffn",
+               custom_getter=float32_variable_storage_getter):
           y = transformer_ffn_layer(
               common_layers.layer_preprocess(x, hparams), hparams, pad_remover,
               conv_padding="SAME", nonpadding_mask=nonpadding)
@@ -689,13 +697,21 @@ def transformer_decoder(decoder_input,
   attention_dropout_broadcast_dims = (
       common_layers.comma_separated_string_to_integer_list(
           getattr(hparams, "attention_dropout_broadcast_dims", "")))
-  with tf.variable_scope(name):
+  #print("@@DEBUG decoder input is", decoder_input)
+  #x=tf.cast(decoder_input,tf.float16)
+  #print("@@DEBUG decoder input is", x)
+
+  decoder_self_attention_bias=tf.cast(decoder_self_attention_bias, tf.float16)
+  encoder_decoder_attention_bias=tf.cast(encoder_decoder_attention_bias, tf.float16)
+  with tf.variable_scope(name, custom_getter=float32_variable_storage_getter):
     for layer in xrange(hparams.num_decoder_layers or
                         hparams.num_hidden_layers):
       layer_name = "layer_%d" % layer
       layer_cache = cache[layer_name] if cache is not None else None
-      with tf.variable_scope(layer_name):
-        with tf.variable_scope("self_attention"):
+      with tf.variable_scope(layer_name,
+             custom_getter=float32_variable_storage_getter):
+        with tf.variable_scope("self_attention",
+               custom_getter=float32_variable_storage_getter):
           y = common_attention.multihead_attention(
               common_layers.layer_preprocess(x, hparams),
               None,
@@ -713,7 +729,8 @@ def transformer_decoder(decoder_input,
               dropout_broadcast_dims=attention_dropout_broadcast_dims)
           x = common_layers.layer_postprocess(x, y, hparams)
         if encoder_output is not None:
-          with tf.variable_scope("encdec_attention"):
+          with tf.variable_scope("encdec_attention",
+                 custom_getter=float32_variable_storage_getter):
             # TODO(llion): Add caching.
             y = common_attention.multihead_attention(
                 common_layers.layer_preprocess(x, hparams),
@@ -728,7 +745,8 @@ def transformer_decoder(decoder_input,
                 make_image_summary=make_image_summary,
                 dropout_broadcast_dims=attention_dropout_broadcast_dims)
             x = common_layers.layer_postprocess(x, y, hparams)
-        with tf.variable_scope("ffn"):
+        with tf.variable_scope("ffn",
+               custom_getter=float32_variable_storage_getter):
           y = transformer_ffn_layer(
               common_layers.layer_preprocess(x, hparams), hparams,
               conv_padding="LEFT", nonpadding_mask=nonpadding)
@@ -901,11 +919,11 @@ def transformer_big():
   return hparams
 
 @registry.register_hparams
-def transformer_big_fp16_HMMA():
+def transformer_big_fp16_hmma():
   """HParams for transfomer big model with fp16 mixed pecision on WMT."""
   hparams = transformer_big()
   hparams.add_hparam("dtype","tf.float16")
-  hparams.add_hparam("fp16_loss_scale",8)
+  hparams.add_hparam("fp16_loss_scale",8.0)
   return hparams
 
 @registry.register_hparams
@@ -1388,3 +1406,10 @@ def transformer_lm_tpu_1():
   hparams.hidden_size = 2048
   hparams.filter_size = 8192
   return hparams
+
+def float32_variable_storage_getter(getter, name, shape=None, dtype=None, initializer=None,   regularizer=None, trainable=True, *args, **kwargs):
+  storage_dtype = tf.float32 if trainable else dtype
+  variable = getter(name, shape, dtype=storage_dtype, initializer=initializer, regularizer=regularizer, trainable=trainable, *args, **kwargs)
+  if trainable and dtype != tf.float32:
+    variable = tf.cast(variable, dtype)
+  return variable

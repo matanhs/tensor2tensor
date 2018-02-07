@@ -396,7 +396,7 @@ def add_timing_signal_1d(x, min_timescale=1.0, max_timescale=1.0e4):
   """
   length = common_layers.shape_list(x)[1]
   channels = common_layers.shape_list(x)[2]
-  signal = get_timing_signal_1d(length, channels, min_timescale, max_timescale)
+  signal = tf.cast(get_timing_signal_1d(length, channels, min_timescale, max_timescale),tf.float16)
   return x + signal
 
 
@@ -1256,12 +1256,15 @@ def dot_product_attention(q,
     A Tensor.
   """
   with tf.variable_scope(
-      name, default_name="dot_product_attention", values=[q, k, v]) as scope:
+      name, default_name="dot_product_attention", values=[q, k, v],custom_getter=float32_variable_storage_getter) as scope:
     # [batch, num_heads, query_length, memory_length]
     logits = tf.matmul(q, k, transpose_b=True)
+    #print("@@DEBUG q,k:",q,k )
     if bias is not None:
       logits += bias
     weights = tf.nn.softmax(logits, name="attention_weights")
+    #print("@@DEBUG dot product attn")
+    #print("@@DEBUG logits:",logits,"\n@@DEBUG bias:",bias,"\n@@DEBUG weigts:",weights)
     if save_weights_to is not None:
       save_weights_to[scope.name] = weights
     # dropping out the attention links for each of the heads
@@ -1269,7 +1272,9 @@ def dot_product_attention(q,
         weights, 1.0 - dropout_rate, broadcast_dims=dropout_broadcast_dims)
     if expert_utils.should_generate_summaries() and make_image_summary:
       attention_image_summary(weights, image_shapes)
-    return tf.matmul(weights, v)
+    context = tf.matmul(weights, v)
+    #print("@@DEBUG context vector",context)
+    return context
 
 
 def _generate_relative_positions_matrix(length, max_relative_position):
@@ -2389,7 +2394,7 @@ def multihead_attention(query_antecedent,
                      "attention heads (%d)." % (total_value_depth, num_heads))
   with tf.variable_scope(
       name,
-      default_name="multihead_attention",
+      default_name="multihead_attention",custom_getter=float32_variable_storage_getter,
       values=[query_antecedent, memory_antecedent]):
     q, k, v = compute_qkv(query_antecedent, memory_antecedent, total_key_depth,
                           total_value_depth, q_filter_width, kv_filter_width,
@@ -3653,3 +3658,10 @@ multihead_attention_sparse_dot_prod = functools.partial(
 
 multihead_attention_sparse_truncated = functools.partial(
     multihead_attention, attention_type=sparse_dot_product_attention_truncated)
+
+def float32_variable_storage_getter(getter, name, shape=None, dtype=None, initializer=None,   regularizer=None, trainable=True, *args, **kwargs):
+  storage_dtype = tf.float32 if trainable else dtype
+  variable = getter(name, shape, dtype=storage_dtype, initializer=initializer, regularizer=regularizer, trainable=trainable, *args, **kwargs)
+  if trainable and dtype != tf.float32:
+    variable = tf.cast(variable, dtype)
+  return variable

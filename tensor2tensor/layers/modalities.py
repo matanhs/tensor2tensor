@@ -80,10 +80,13 @@ class SymbolModality(modality.Modality):
       shard_size = (self._vocab_size // num_shards) + (
           1 if i < self._vocab_size % num_shards else 0)
       var_name = "weights_%d" % i
+      # we want input/target embeddings to use 32bit storage but 
+      # return a float16 copy for compute this should be better then 
+      # just casting the input of the encoder/decoder body 
       shards.append(
-          tf.get_variable(
-              var_name, [shard_size, hidden_dim],
-              initializer=tf.random_normal_initializer(0.0, hidden_dim**-0.5)))
+        tf.cast(tf.get_variable(var_name, [shard_size, hidden_dim],
+          initializer=tf.random_normal_initializer(0.0, hidden_dim**-0.5),
+          dtype=tf.float32),tf.float16))
     if num_shards == 1:
       ret = shards[0]
     else:
@@ -91,6 +94,7 @@ class SymbolModality(modality.Modality):
     # Convert ret to tensor.
     if not context.in_eager_mode():
       ret = eu.convert_gradient_to_tensor(ret)
+    #print("#####DEBUG embedding/softmax weigts:",ret)
     return ret
 
   def bottom_simple(self, x, name, reuse):
@@ -103,7 +107,8 @@ class SymbolModality(modality.Modality):
       ret = common_layers.gather(var, x)
       if self._model_hparams.multiply_embedding_mode == "sqrt_depth":
         ret *= self._body_input_depth**0.5
-      ret *= tf.expand_dims(tf.to_float(tf.not_equal(x, 0)), -1)
+      ret *= tf.expand_dims(tf.cast(tf.not_equal(x, 0),tf.float16), -1)
+      #print("$$$$$DEBUG bottom embedding weights:",ret)
       return ret
 
   def bottom(self, x):
@@ -141,7 +146,7 @@ class SymbolModality(modality.Modality):
       scope_name = "softmax"
       reuse = False
 
-    with tf.variable_scope(scope_name, reuse=reuse):
+    with tf.variable_scope(scope_name, reuse=reuse, custom_getter=float32_variable_storage_getter):
       body_output_shape = common_layers.shape_list(body_output)
       var = self._get_weights(body_output_shape[-1])
       if (self._model_hparams.factored_logits and
@@ -151,6 +156,8 @@ class SymbolModality(modality.Modality):
         return common_layers.FactoredTensor(body_output, var)
       else:
         body_output = tf.reshape(body_output, [-1, body_output_shape[-1]])
+        #print("$$$DEBUG: body output",body_output,"\n$$$DEBUG: var",var)
+        #logits = tf.matmul(body_output,tf.cast( var,tf.float16), transpose_b=True)
         logits = tf.matmul(body_output, var, transpose_b=True)
         if (common_layers.is_on_tpu() and
             self._model_hparams.mode == tf.estimator.ModeKeys.TRAIN):
@@ -502,3 +509,10 @@ class IdentitySymbolModality(SymbolModality):
   def targets_bottom(self, x):
     """SymbolModality overrides targets_bottom, so need to override here too."""
     return self.bottom(x)
+
+def float32_variable_storage_getter(getter, name, shape=None, dtype=None, initializer=None,   regularizer=None, trainable=True, *args, **kwargs):
+  storage_dtype = tf.float32 if trainable else dtype
+  variable = getter(name, shape, dtype=storage_dtype, initializer=initializer, regularizer=regularizer, trainable=trainable, *args, **kwargs)
+  if trainable and dtype != tf.float32:
+    variable = tf.cast(variable, dtype)
+  return variable

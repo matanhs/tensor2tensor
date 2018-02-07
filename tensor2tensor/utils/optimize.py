@@ -34,6 +34,9 @@ def optimize(loss, learning_rate, hparams, use_tpu=False):
   loss = weight_decay_and_noise(loss, hparams, learning_rate)
   loss = tf.identity(loss, name="total_loss")
   log_variable_sizes(verbose=hparams.summarize_vars)
+
+  #print("@@DEBUG - optimizer loss",loss)
+
   diet_vars = [
       v for v in tf.global_variables() if v.dtype == dtypes.float16_ref
   ]
@@ -107,13 +110,23 @@ class ConditionalOptimizer(tf.train.Optimizer):
       self._opt = tf.contrib.layers.OPTIMIZER_CLS_NAMES[optimizer_name](lr)
 
   def compute_gradients(self, loss, var_list=None, **kwargs):
-    gradients = self._opt.compute_gradients(loss*self.fp16_loss_scale, var_list, **kwargs)
+    scale_loss = self.fp16_loss_scale
+    #gradients = self._opt.compute_gradients(tf.cast(loss*scale_loss,tf.float16), var_list, **kwargs)
+    #print("****DEBUG loss and scale:",loss,scale_loss*loss)
+    gradients = self._opt.compute_gradients(loss*scale_loss, var_list, **kwargs)
+    #for g,v in gradients:  
+    #  if type(g) != type(v): print("****DEBUG grads:",g, "\n****DEBUG values",v)
+    #print("****DEBUG gradients ",gradients[1])
+
     if self.fp16_loss_scale != 1:
       #rescale gradients with loss scale
-      return gradients/self.fp16_loss_scale
+      
+      gr_list =[ (g/scale_loss if g is not None else g ,v ) for g,v in gradients ] 
+      return gr_list
     return gradients
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
+    #print(grads_and_vars)
     return self._opt.apply_gradients(
         grads_and_vars, global_step=global_step, name=name)
 
