@@ -204,7 +204,7 @@ def create_hooks(use_tfdbg=False, use_dbgprofile=False, dbgprofile_kwargs=None,
     tf.logging.info("Using ProfilerHook")
     defaults = dict(save_steps=10, show_dataflow=True, show_memory=True)
     defaults.update(dbgprofile_kwargs)
-    train_monitors.append(tf.contrib.hooks.ProfilerHook(**defaults))
+    train_monitors.append(tf.train.ProfilerHook(**defaults))
 
   if use_validation_monitor:
     tf.logging.info("Using ValidationMonitor")
